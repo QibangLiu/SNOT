@@ -250,12 +250,16 @@ trainer.compile(
     checkpoint=checkpoint,
     scheduler_metric_name='val_loss'
 )
-history = trainer.fit(
-    dataloader_train, val_loader=dataloader_test, epochs=3000)
-trainer.save_logs()
+# history = trainer.fit(
+#     dataloader_train, val_loader=dataloader_test, epochs=3000)
+# trainer.save_logs()
 
 # evaluation
+import time
+start_time = time.time()
 y_pred_test, y_true_test = trainer.predict(dataloader_test)
+print(f"Prediction time: {time.time() - start_time:.2e} seconds, each sample: {(time.time() - start_time) / len(y_true_test):.4e} seconds")
+
 y_pred_test = solu_inv(y_pred_test)
 y_true_test = solu_inv(y_true_test)
 

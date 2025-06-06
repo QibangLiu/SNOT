@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
+import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_data = 4000
 
@@ -280,13 +281,15 @@ trainer.compile(
     checkpoint=checkpoint,
     scheduler_metric_name="val_loss",
 )
-h = trainer.fit(dataloader_train, val_loader=dataloader_test,
-                epochs=3000)
-trainer.save_logs()
+# h = trainer.fit(dataloader_train, val_loader=dataloader_test,
+#                 epochs=3000)
+# trainer.save_logs()
 
 # %%
 trainer.load_weights(device=device)
+start_time = time.time()
 y_pred, y_true = trainer.predict(dataloader_test)
+print(f"Prediction time: {time.time() - start_time:.2f} seconds, each sample: {(time.time() - start_time) / len(y_pred):.4f} seconds")
 y_pred = solu_inv(y_pred)
 y_true = solu_inv(y_true)
 

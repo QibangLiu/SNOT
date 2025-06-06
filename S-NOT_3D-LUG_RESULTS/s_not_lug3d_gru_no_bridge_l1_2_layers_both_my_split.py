@@ -262,13 +262,17 @@ trainer.compile(
     checkpoint=checkpoint,
     scheduler_metric_name="val_loss",
 )
-h = trainer.fit(dataloader_train, val_loader=dataloader_test,
-                epochs=500)
-trainer.save_logs()
+# h = trainer.fit(dataloader_train, val_loader=dataloader_test,
+#                 epochs=500)
+# trainer.save_logs()
 
 # %%
 trainer.load_weights(device=device)
+# y_pred, y_true = trainer.predict(dataloader_test)
+import time
+start_time = time.time()
 y_pred, y_true = trainer.predict(dataloader_test)
+print(f"Prediction time: {time.time() - start_time:.2f} seconds, each sample: {(time.time() - start_time) / len(y_pred):.4f} seconds")
 y_pred = solu_inv(y_pred)
 y_true = solu_inv(y_true)
 
