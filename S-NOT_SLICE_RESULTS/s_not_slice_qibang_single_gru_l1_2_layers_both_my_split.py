@@ -250,6 +250,7 @@ trainer.compile(
     checkpoint=checkpoint,
     scheduler_metric_name='val_loss'
 )
+ # %%
 # history = trainer.fit(
 #     dataloader_train, val_loader=dataloader_test, epochs=3000)
 # trainer.save_logs()

@@ -3,3 +3,5 @@ data/*
 *.slurm
 __pycache__/
 !data/.gitkeep
+
+*/s-not_3D-LUG_Nsteps_results.npz
