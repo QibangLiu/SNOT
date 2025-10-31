@@ -5,3 +5,5 @@ __pycache__/
 !data/.gitkeep
 
 */s-not_3D-LUG_Nsteps_results.npz
+./S-NOT_SLICE_RESULTS/*.jpg
+./S-NOT_SLICE_RESULTS/*.png

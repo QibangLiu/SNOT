@@ -14,6 +14,20 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 import time
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(
+    description='S-NOT DOG BONE Model Configuration')
+parser.add_argument('--num_gru_layers', type=int, default=4,
+                    help='Number of GRU layers (default: 4)')
+parser.add_argument('--num_heads', type=int, default=1,
+                    help='Number of attention heads (default: 1)')
+parser.add_argument('--self_attn_layers', type=int, default=3,
+                    help='Number of self-attention layers (default: 3)')
+parser.add_argument('--cross_attn_layers', type=int, default=4,
+                    help='Number of cross-attention layers (default: 4)')
+args, unknown = parser.parse_known_args()
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_data = 4000
 
@@ -136,21 +150,30 @@ dataloader_test = DataLoader(dataset_test, batch_size=50, shuffle=False)
 
 
 class Branch(nn.Module):
-    def __init__(self, input_dim=1, embed_dim=64, self_attn_layers=4, emb_hidden_dims=[128, 128], num_heads=4):
+    def __init__(self, input_dim=1, embed_dim=64, self_attn_layers=4, emb_hidden_dims=[128, 128], num_heads=4, num_gru_layers=2):
         super(Branch, self).__init__()
 
-        # input_size = input_dim = 1, only one input
-        self.gru1 = nn.GRU(input_size=input_dim, hidden_size=256,
-                           batch_first=True, bidirectional=False)
-        self.gru2 = nn.GRU(input_size=256, hidden_size=128,
-                           batch_first=True, bidirectional=False)
-        # self.gru3 = nn.GRU(input_size=128, hidden_size=128,
-        # batch_first=True, bidirectional=False)
-        # self.gru4 = nn.GRU(input_size=128, hidden_size=256,
-        # batch_first=True, bidirectional=False)
+        self.num_gru_layers = num_gru_layers
 
-        # self.time_distributed = nn.Linear(256, embed_dim)
-        self.time_distributed = nn.Linear(128, embed_dim)
+        # Create GRU layers dynamically based on num_gru_layers
+        self.gru_layers = nn.ModuleList()
+        if num_gru_layers >= 1:
+            self.gru_layers.append(nn.GRU(input_size=input_dim, hidden_size=256,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 2:
+            self.gru_layers.append(nn.GRU(input_size=256, hidden_size=128,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 3:
+            self.gru_layers.append(nn.GRU(input_size=128, hidden_size=128,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 4:
+            self.gru_layers.append(nn.GRU(input_size=128, hidden_size=256,
+                                          batch_first=True, bidirectional=False))
+
+        # Determine the final hidden size based on last GRU layer
+        # Last GRU outputs 256 if num_gru_layers is 1 or 4, otherwise 128
+        final_hidden_size = 256 if num_gru_layers == 1 or num_gru_layers == 4 else 128
+        self.time_distributed = nn.Linear(final_hidden_size, embed_dim)
 
         # projection to embedding dimension
         # self.fc = nn.Linear(256, embed_dim)
@@ -165,10 +188,9 @@ class Branch(nn.Module):
             width=embed_dim, heads=num_heads, layers=self_attn_layers)
 
     def forward(self, x):
-        out, _ = self.gru1(x)
-        out, _ = self.gru2(out)
-        # out, _ = self.gru3(out)
-        # out, _ = self.gru4(out)
+        out = x
+        for gru_layer in self.gru_layers:
+            out, _ = gru_layer(out)
         x = self.time_distributed(out)
         B, S, embed_dim = x.shape
         x = x * torch.sqrt(torch.tensor(embed_dim,
@@ -224,10 +246,11 @@ class Truck(nn.Module):
 
 
 # %%
-branch = Branch(input_dim=1, embed_dim=64, self_attn_layers=3,
-                emb_hidden_dims=[128, 128], num_heads=1).to(device)
-snot = Truck(branch, embed_dim=64, cross_attn_layers=4,
-             num_heads=1, in_channels=2, out_channels=2).to(device)
+branch = Branch(input_dim=1, embed_dim=64, self_attn_layers=args.self_attn_layers,
+                emb_hidden_dims=[128, 128], num_heads=args.num_heads,
+                num_gru_layers=args.num_gru_layers).to(device)
+snot = Truck(branch, embed_dim=64, cross_attn_layers=args.cross_attn_layers,
+             num_heads=args.num_heads, in_channels=2, out_channels=2).to(device)
 
 # %%
 # xinp = torch.randn(2, 101, 1)
@@ -268,8 +291,10 @@ class TRAINER(torch_trainer.TorchTrainer):
 
 
 # %%
+# Create hyperparameter tag for saving
+save_path = f"./saved_weights/test_dog_bone_g_l{args.num_gru_layers}_h{args.num_heads}_s{args.self_attn_layers}_c{args.cross_attn_layers}"
 trainer = TRAINER(
-    snot, device, "./saved_weights/test_dog_bone_gru_l1")
+    snot, device, save_path)
 optimizer = torch.optim.Adam(trainer.parameters(), lr=1e-3)
 checkpoint = torch_trainer.ModelCheckpoint(
     monitor="val_loss", save_best_only=True)
@@ -289,7 +314,8 @@ trainer.compile(
 trainer.load_weights(device=device)
 start_time = time.time()
 y_pred, y_true = trainer.predict(dataloader_test)
-print(f"Prediction time: {time.time() - start_time:.2f} seconds, each sample: {(time.time() - start_time) / len(y_pred):.4f} seconds")
+print(
+    f"Prediction time: {time.time() - start_time:.2e} seconds, each sample: {(time.time() - start_time) / len(y_pred):.4e} seconds")
 y_pred = solu_inv(y_pred)
 y_true = solu_inv(y_true)
 
@@ -315,7 +341,9 @@ stress_pred_test = y_pred[..., 0]
 peeq_true_test = y_true[..., 1]
 peeq_pred_test = y_pred[..., 1]
 
-np.savez_compressed('s-not_dog_bone_results.npz', a=peeq_true_test, b=stress_true_test,
+# Save results with hyperparameter tag
+results_file = f's-not_dog_bone_g_l{args.num_gru_layers}_h{args.num_heads}_s{args.self_attn_layers}_c{args.cross_attn_layers}_results.npz'
+np.savez_compressed(results_file, a=peeq_true_test, b=stress_true_test,
                     c=peeq_pred_test, d=stress_pred_test, e=xy_train_testing_org)
 
 # %%

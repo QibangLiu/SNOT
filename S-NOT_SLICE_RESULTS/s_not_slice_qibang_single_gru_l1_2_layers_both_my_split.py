@@ -1,4 +1,5 @@
 # %%
+import time
 from trainer import torch_trainer
 from modules.point_position_embedding import PosEmbLinear, encode_position, position_encoding_channels  # type: ignore
 from modules.transformer import SelfAttentionBlocks, MLP, CrossAttentionBlocks, sinusoidal_positional_encoding  # type: ignore
@@ -11,6 +12,18 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='S-NOT SLICE Model Configuration')
+parser.add_argument('--num_gru_layers', type=int, default=2,
+                    help='Number of GRU layers (default: 2)')
+parser.add_argument('--num_heads', type=int, default=1,
+                    help='Number of attention heads (default: 1)')
+parser.add_argument('--self_attn_layers', type=int, default=3,
+                    help='Number of self-attention layers (default: 3)')
+parser.add_argument('--cross_attn_layers', type=int, default=6,
+                    help='Number of cross-attention layers (default: 6)')
+args, unknown = parser.parse_known_args()
 
 # ----------------------------- COP Loss -----------------------------
 
@@ -124,17 +137,30 @@ dataloader_test = DataLoader(dataset_test, batch_size=256, shuffle=False)
 
 
 class Branch(nn.Module):
-    def __init__(self, input_dim=2, embed_dim=64, self_attn_layers=4, num_heads=4):
+    def __init__(self, input_dim=2, embed_dim=64, self_attn_layers=4, num_heads=4, num_gru_layers=2):
         super(Branch, self).__init__()
-        self.gru1 = nn.GRU(input_size=input_dim, hidden_size=256,
-                           batch_first=True, bidirectional=False)
-        self.gru2 = nn.GRU(input_size=256, hidden_size=128,
-                           batch_first=True, bidirectional=False)
-        # self.gru3 = nn.GRU(input_size=128, hidden_size=128,
-        # batch_first=True, bidirectional=False)
-        # self.gru4 = nn.GRU(input_size=128, hidden_size=256,
-        # batch_first=True, bidirectional=False)
-        self.time_distributed = nn.Linear(128, embed_dim)
+
+        self.num_gru_layers = num_gru_layers
+
+        # Create GRU layers dynamically based on num_gru_layers
+        self.gru_layers = nn.ModuleList()
+        if num_gru_layers >= 1:
+            self.gru_layers.append(nn.GRU(input_size=input_dim, hidden_size=256,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 2:
+            self.gru_layers.append(nn.GRU(input_size=256, hidden_size=128,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 3:
+            self.gru_layers.append(nn.GRU(input_size=128, hidden_size=128,
+                                          batch_first=True, bidirectional=False))
+        if num_gru_layers >= 4:
+            self.gru_layers.append(nn.GRU(input_size=128, hidden_size=256,
+                                          batch_first=True, bidirectional=False))
+
+        # Determine the final hidden size based on last GRU layer
+        # Last GRU outputs 256 if num_gru_layers is 1 or 4, otherwise 128
+        final_hidden_size = 256 if num_gru_layers == 1 or num_gru_layers == 4 else 128
+        self.time_distributed = nn.Linear(final_hidden_size, embed_dim)
         self.weighted_sum = nn.Linear(2 * embed_dim, embed_dim, bias=False)
         self.pos_encoding = sinusoidal_positional_encoding(
             length=2048, d_model=embed_dim)[None, :, :].to(device)
@@ -142,10 +168,9 @@ class Branch(nn.Module):
             width=embed_dim, heads=num_heads, layers=self_attn_layers)
 
     def forward(self, x):
-        out, _ = self.gru1(x)
-        out, _ = self.gru2(out)
-        # out, _ = self.gru3(out)
-        # out, _ = self.gru4(out)
+        out = x
+        for gru_layer in self.gru_layers:
+            out, _ = gru_layer(out)
         x = self.time_distributed(out)
         B, S, embed_dim = x.shape
         x = x * torch.sqrt(torch.tensor(embed_dim,
@@ -231,14 +256,22 @@ class TRAINER(torch_trainer.TorchTrainer):
         return y_pred, y_true
 
 
-branch = Branch(embed_dim=64, self_attn_layers=3, num_heads=1).to(device)
+branch = Branch(input_dim=2, embed_dim=64, self_attn_layers=args.self_attn_layers,
+                num_heads=args.num_heads, num_gru_layers=args.num_gru_layers).to(device)
 snot = Truck(
     branch, embed_dim=64,
-    cross_attn_layers=4, num_heads=1,
+    cross_attn_layers=args.cross_attn_layers, num_heads=args.num_heads,
     in_channels=2, out_channels=2
 ).to(device)
 
-trainer = TRAINER(snot, device, './saved_weights/test_slice_both')
+# print the number of parameters in the model
+print(
+    f"Number of parameters in the model: {sum(p.numel() for p in snot.parameters() if p.requires_grad)}")
+
+
+# Create hyperparameter tag for saving
+save_path = f"./saved_weights/test_slice_g_l{args.num_gru_layers}_h{args.num_heads}_s{args.self_attn_layers}_c{args.cross_attn_layers}"
+trainer = TRAINER(snot, device, save_path)
 optimizer = torch.optim.Adam(trainer.parameters(), lr=1e-3)
 checkpoint = torch_trainer.ModelCheckpoint(
     monitor='val_loss', save_best_only=True)
@@ -250,13 +283,13 @@ trainer.compile(
     checkpoint=checkpoint,
     scheduler_metric_name='val_loss'
 )
- # %%
+# %%
 # history = trainer.fit(
 #     dataloader_train, val_loader=dataloader_test, epochs=3000)
 # trainer.save_logs()
 
 # evaluation
-import time
+trainer.load_weights(device=device)
 start_time = time.time()
 y_pred_test, y_true_test = trainer.predict(dataloader_test)
 print(f"Prediction time: {time.time() - start_time:.2e} seconds, each sample: {(time.time() - start_time) / len(y_true_test):.4e} seconds")
@@ -271,7 +304,9 @@ stress_pred_test = y_pred_test[..., 0]
 temp_true_test = y_true_test[..., 1]
 temp_pred_test = y_pred_test[..., 1]
 
-np.savez_compressed('s-not_slice_results.npz', a=temp_true_test,
+# Save results with hyperparameter tag
+results_file = f's-not_slice_g_l{args.num_gru_layers}_h{args.num_heads}_s{args.self_attn_layers}_c{args.cross_attn_layers}_results.npz'
+np.savez_compressed(results_file, a=temp_true_test,
                     b=stress_true_test, c=temp_pred_test, d=stress_pred_test)
 
 
